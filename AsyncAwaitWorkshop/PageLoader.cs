@@ -1,6 +1,8 @@
 ﻿namespace AsyncAwaitWorkshop
 {
     using System;
+    using System.Collections.Concurrent;
+    using System.Collections.Generic;
     using System.IO;
     using System.Net;
     using System.Net.Http;
@@ -18,6 +20,8 @@
 
         private readonly PageLoaderSettings settings;
 
+        private readonly List<string> visited;
+
         public PageLoader(string startFrom, string saveTo)
         {
             this.baseUrl = new Uri(startFrom);
@@ -26,6 +30,8 @@
             {
                 this.directory.Create();
             }
+
+            this.visited = new List<string>();
         }
 
         public PageLoader(string startFrom, string saveTo, PageLoaderSettings settings)
@@ -78,11 +84,12 @@
                         }).DistinctBy(c => c.GetAttribute("href")))
                     {
                         var newUri = this.UriFromString(uri, c.GetAttribute("href"));
-                        if (newUri == null || newUri.AbsolutePath == uri.AbsolutePath)
+                        if (newUri == null || this.visited.Contains(newUri.AbsolutePath))
                         {
                             continue;
                         }
-                        
+
+                        this.visited.Add(newUri.AbsolutePath);
                         await this.GetAsync(newUri);
                     }
                 }
