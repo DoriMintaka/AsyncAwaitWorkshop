@@ -27,7 +27,7 @@
         }
 
         public PageLoader(string startFrom, string saveTo)
-            : this(startFrom, saveTo, null, 0, DomainRestriction.NoRestrictions)
+            : this(startFrom, saveTo, null, -1, DomainRestriction.NoRestrictions)
         {
         }
 
@@ -175,7 +175,7 @@
                 this.baseUri = baseUri;
                 this.ConfigureExtensionValidator(extensions);
                 this.ConfigureDomainValidator(restrictions);
-                this.Levels = levels;
+                this.Levels = levels < 0 ? int.MaxValue : levels;
             }
 
             public int Levels { get; }
