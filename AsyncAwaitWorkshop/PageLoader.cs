@@ -1,7 +1,6 @@
 ﻿namespace AsyncAwaitWorkshop
 {
     using System;
-    using System.Collections.Concurrent;
     using System.Collections.Generic;
     using System.IO;
     using System.Net;
@@ -22,7 +21,17 @@
 
         private readonly List<string> visited;
 
+        public enum DomainRestriction
+        {
+            NoRestrictions, SameDomainOnly, SubdomainsOnly
+        }
+
         public PageLoader(string startFrom, string saveTo)
+            : this(startFrom, saveTo, null, 0, DomainRestriction.NoRestrictions)
+        {
+        }
+
+        public PageLoader(string startFrom, string saveTo, string extensions, int levels, DomainRestriction restriction)
         {
             this.baseUrl = new Uri(startFrom);
             this.directory = new DirectoryInfo(saveTo);
@@ -32,20 +41,16 @@
             }
 
             this.visited = new List<string>();
-        }
 
-        public PageLoader(string startFrom, string saveTo, PageLoaderSettings settings)
-            : this(startFrom, saveTo)
-        {
-            this.settings = settings;
+            this.settings = new PageLoaderSettings(this.baseUrl, extensions, levels, restriction);
         }
 
         public async Task GetAsync()
         {
-            await this.GetAsync(this.baseUrl);
+            await this.GetAsync(this.baseUrl, 0);
         }
 
-        private async Task GetAsync(Uri uri)
+        private async Task GetAsync(Uri uri, int currentLevel)
         {
             if (uri == null)
             {
@@ -68,6 +73,11 @@
                         await streamWriter.WriteAsync(result);
                     }
 
+                    if (currentLevel == this.settings.Levels)
+                    {
+                        return;
+                    }
+
                     var cq = CQ.CreateDocument(result);
                     foreach (var c in cq.Find("a").Each(c =>
                         {
@@ -84,14 +94,45 @@
                         }).DistinctBy(c => c.GetAttribute("href")))
                     {
                         var newUri = this.UriFromString(uri, c.GetAttribute("href"));
-                        if (newUri == null || this.visited.Contains(newUri.AbsolutePath))
+                        if (newUri == null || !this.settings.Validate(newUri) || this.visited.Contains(newUri.AbsoluteUri))
                         {
                             continue;
                         }
 
-                        this.visited.Add(newUri.AbsolutePath);
-                        await this.GetAsync(newUri);
+                        if (newUri.IsFile)
+                        {
+                            await this.GetFileAsync(newUri);
+                            continue;
+                        }
+
+                        this.visited.Add(newUri.AbsoluteUri);
+                        Console.WriteLine($"Processing {newUri.AbsoluteUri}");
+                        await this.GetAsync(newUri, currentLevel + 1);
                     }
+                }
+            }
+        }
+
+        private async Task GetFileAsync(Uri uri)
+        {
+            if (uri == null)
+            {
+                return;
+            }
+
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+
+            using (HttpClient client = new HttpClient())
+            using (HttpResponseMessage response = await client.GetAsync(uri))
+            using (HttpContent content = response.Content)
+            {
+                var result = await content.ReadAsByteArrayAsync();
+                using (var sr = File.Create($"{this.directory.FullName}\\" +
+                                            DateTime.Now.ToString("yyyyMMddHHmmss") +
+                                            $"{DateTime.Now.Millisecond}." +
+                                            uri.AbsoluteUri.Substring(uri.AbsoluteUri.LastIndexOf('.'))))
+                {
+                    await sr.WriteAsync(result, 0, result.Length);
                 }
             }
         }
@@ -119,6 +160,75 @@
             }
 
             return null;
+        }
+
+        private class PageLoaderSettings
+        {
+            private readonly Uri baseUri;
+
+            private Predicate<Uri> extensionValidator;
+
+            private Predicate<Uri> domainValidator;
+
+            public PageLoaderSettings(Uri baseUri, string extensions, int levels, DomainRestriction restrictions)
+            {
+                this.baseUri = baseUri;
+                this.ConfigureExtensionValidator(extensions);
+                this.ConfigureDomainValidator(restrictions);
+                this.Levels = levels;
+            }
+
+            public int Levels { get; }
+
+            public bool Validate(Uri uri)
+            {
+                return this.extensionValidator(uri) && this.domainValidator(uri);
+            }
+
+            private void ConfigureExtensionValidator(string extensions)
+            {
+                if (extensions == null)
+                {
+                    this.extensionValidator += u => true;
+                    return;
+                }
+
+                var parsed = extensions.Split(',');
+                for (int i = 0; i < parsed.Length; i++)
+                {
+                    parsed[i] = parsed[i].Trim();
+                }
+
+                this.extensionValidator += e =>
+                    {
+                        foreach (string s in parsed)
+                        {
+                            if (!e.IsFile || e.AbsoluteUri.EndsWith(s))
+                            {
+                                return true;
+                            }
+                        }
+
+                        return false;
+                    };
+            }
+
+            private void ConfigureDomainValidator(DomainRestriction restrictions)
+            {
+                if (restrictions == DomainRestriction.SameDomainOnly)
+                {
+                    this.domainValidator += u => this.baseUri.Host == u.Host;
+                    return;
+                }
+
+                if (restrictions == DomainRestriction.SubdomainsOnly)
+                {
+                    this.domainValidator += u => this.baseUri.IsBaseOf(u);
+                    return;
+                }
+
+                this.domainValidator += u => true;
+            }
         }
     }
 }
